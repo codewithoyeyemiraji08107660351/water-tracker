@@ -38,6 +38,7 @@ class _BubblePainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     const tw = SpeechBubble._tailWidth;
+    if (size.width <= tw * 2 || size.height <= 0) return;
     final left = tail == BubbleTail.left ? tw : 0.0;
     final right = size.width - (tail == BubbleTail.right ? tw : 0.0);
     final body = RRect.fromLTRBR(left, 0, right, size.height, const Radius.circular(AppRadius.md));

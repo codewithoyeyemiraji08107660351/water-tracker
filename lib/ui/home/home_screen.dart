@@ -1,5 +1,3 @@
-import 'dart:math' as math;
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -48,7 +46,8 @@ class HomeScreen extends ConsumerWidget {
               LayoutBuilder(
                 builder: (context, constraints) {
                   const side = 64.0;
-                  final ringSize = math.min(AppSizes.progressRing, constraints.maxWidth - side * 2);
+                  final ringSize = (constraints.maxWidth - side * 2).clamp(0.0, AppSizes.progressRing);
+                  if (ringSize < 80) return const SizedBox(height: AppSizes.progressRing);
                   return Row(
                     children: [
                       const SizedBox(width: side),

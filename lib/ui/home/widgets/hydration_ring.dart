@@ -105,6 +105,7 @@ class _RingPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    if (size.shortestSide <= (_stroke + _gap) * 2) return;
     final center = size.center(Offset.zero);
     final ringRadius = size.width / 2 - _stroke / 2;
     final innerRadius = ringRadius - _stroke / 2 - _gap;
