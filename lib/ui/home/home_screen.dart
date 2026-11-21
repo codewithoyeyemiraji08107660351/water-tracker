@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -7,6 +10,7 @@ import '../../core/units/volume.dart';
 import '../../domain/models/cup.dart';
 import '../../domain/models/intake_entry.dart';
 import '../../domain/models/user_settings.dart';
+import '../../domain/services/daily_cap.dart';
 import '../../state/providers.dart';
 import '../../state/settings_controller.dart';
 import '../../state/today_controller.dart';
@@ -27,6 +31,9 @@ class HomeScreen extends ConsumerWidget {
     final settings = ref.watch(settingsControllerProvider);
     final todayAsync = ref.watch(todayIntakeProvider);
     final total = ref.watch(todayTotalProvider);
+    final remaining = ref.watch(todayRemainingProvider);
+    final goalReached = remaining == 0;
+    final nextCupMl = math.min(settings.cupMl, remaining);
     final plan = ref.watch(latestPlanProvider);
     final now = ref.read(clockProvider)();
     final text = Theme.of(context).textTheme;
@@ -79,29 +86,32 @@ class HomeScreen extends ConsumerWidget {
                   runSpacing: AppSpace.sm,
                   children: [
                     FilledButton.icon(
-                      onPressed: () => _quickAdd(context, ref, settings, total),
-                      icon: VesselIcon(
-                        kind: CupPreset.kindFor(settings.cupMl),
-                        size: 20,
-                        filled: true,
-                        color: AppColors.onPrimary,
-                        waterColor: AppColors.onPrimary.withValues(alpha: 0.6),
+                      onPressed: goalReached ? null : () => _quickAdd(context, ref, settings, total),
+                      icon: goalReached
+                          ? const Icon(Icons.check_circle_outline, size: 20)
+                          : VesselIcon(
+                              kind: CupPreset.kindFor(nextCupMl),
+                              size: 20,
+                              filled: true,
+                              color: AppColors.onPrimary,
+                              waterColor: AppColors.onPrimary.withValues(alpha: 0.6),
+                            ),
+                      label: Text(goalReached ? 'Goal reached' : 'Drink ${Volume.format(nextCupMl, settings.unit)}'),
+                    ),
+                    if (!goalReached)
+                      TextButton(
+                        onPressed: () => _customAdd(context, ref, settings, total, remaining),
+                        child: const Text('Other amount'),
                       ),
-                      label: Text('Drink ${Volume.format(settings.cupMl, settings.unit)}'),
-                    ),
-                    TextButton(
-                      onPressed: () => _customAdd(context, ref, settings, total),
-                      child: const Text('Other amount'),
-                    ),
                   ],
                 ),
               ),
-              if (total >= settings.goalMl) ...[
+              if (goalReached) ...[
                 const SizedBox(height: AppSpace.lg),
                 const Padding(
                   padding: EdgeInsets.symmetric(horizontal: AppSpace.xl),
                   child: SpeechBubble(
-                    text: 'Goal reached for today. Keep sipping if you are thirsty.',
+                    text: "Today's cup is full. Need a correction? Edit or remove a drink below.",
                     tail: BubbleTail.left,
                   ),
                 ),
@@ -133,7 +143,7 @@ class HomeScreen extends ConsumerWidget {
                       nextReminder: next,
                       cupMl: settings.cupMl,
                       unit: settings.unit,
-                      onAction: (entry, action) => _onEntryAction(context, ref, settings, entry, action),
+                      onAction: (entry, action) => _onEntryAction(context, ref, settings, total, entry, action),
                     );
                   },
                 ),
@@ -147,10 +157,17 @@ class HomeScreen extends ConsumerWidget {
 
   Future<void> _quickAdd(BuildContext context, WidgetRef ref, UserSettings settings, int totalBefore) async {
     await HapticFeedback.lightImpact();
-    await _log(context, ref, settings, totalBefore, settings.cupMl, null);
+    if (!context.mounted) return;
+    await _log(context, ref, settings, totalBefore, settings.cupMl, null, topUp: true);
   }
 
-  Future<void> _customAdd(BuildContext context, WidgetRef ref, UserSettings settings, int totalBefore) async {
+  Future<void> _customAdd(
+    BuildContext context,
+    WidgetRef ref,
+    UserSettings settings,
+    int totalBefore,
+    int remainingMl,
+  ) async {
     final now = ref.read(clockProvider)();
     final result = await showAmountSheet(
       context,
@@ -158,6 +175,7 @@ class HomeScreen extends ConsumerWidget {
       initialMl: settings.cupMl,
       initialTime: now,
       now: now,
+      maxMl: remainingMl,
     );
     if (result == null || !context.mounted) return;
     await _log(context, ref, settings, totalBefore, result.amountMl, result.loggedAt);
@@ -169,14 +187,22 @@ class HomeScreen extends ConsumerWidget {
     UserSettings settings,
     int totalBefore,
     int amountMl,
-    DateTime? at,
-  ) async {
+    DateTime? at, {
+    bool topUp = false,
+  }) async {
     final messenger = ScaffoldMessenger.of(context);
     try {
-      await ref.read(todayIntakeProvider.notifier).add(amountMl, at: at);
-      if (totalBefore < settings.goalMl && totalBefore + amountMl >= settings.goalMl) {
+      final entry = await ref.read(todayIntakeProvider.notifier).add(amountMl, at: at, topUp: topUp);
+      final reachedNow = totalBefore < settings.goalMl && totalBefore + entry.amountMl >= settings.goalMl;
+      if (entry.amountMl < amountMl) {
+        messenger.showSnackBar(SnackBar(
+          content: Text('Logged ${Volume.format(entry.amountMl, settings.unit)} to fill your daily goal.'),
+        ));
+      } else if (reachedNow) {
         messenger.showSnackBar(const SnackBar(content: Text('Daily goal reached. Nice work.')));
       }
+    } on DailyLimitException catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text(_limitMessage(e, settings))));
     } catch (e) {
       messenger.showSnackBar(SnackBar(content: Text(friendlyError(e))));
     }
@@ -186,6 +212,7 @@ class HomeScreen extends ConsumerWidget {
     BuildContext context,
     WidgetRef ref,
     UserSettings settings,
+    int total,
     IntakeEntry entry,
     EntryAction action,
   ) async {
@@ -201,6 +228,11 @@ class HomeScreen extends ConsumerWidget {
             initialTime: entry.loggedAt,
             now: ref.read(clockProvider)(),
             editing: true,
+            maxMl: DailyCap.maxAllowed(
+              otherTotalMl: total - entry.amountMl,
+              goalMl: settings.goalMl,
+              currentAmountMl: entry.amountMl,
+            ),
           );
           if (result == null) return;
           await controller.edit(entry.copyWith(amountMl: result.amountMl, loggedAt: result.loggedAt));
@@ -208,13 +240,38 @@ class HomeScreen extends ConsumerWidget {
           await controller.remove(entry);
           messenger.showSnackBar(SnackBar(
             content: Text('Removed ${Volume.format(entry.amountMl, settings.unit)}'),
-            action: SnackBarAction(label: 'Undo', onPressed: () => controller.restore(entry)),
+            action: SnackBarAction(
+              label: 'Undo',
+              onPressed: () => unawaited(_undoRemove(controller, messenger, entry)),
+            ),
           ));
       }
+    } on DailyLimitException catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text(_limitMessage(e, settings))));
     } catch (e) {
       messenger.showSnackBar(SnackBar(content: Text(friendlyError(e))));
     }
   }
+
+  Future<void> _undoRemove(
+    TodayIntakeController controller,
+    ScaffoldMessengerState messenger,
+    IntakeEntry entry,
+  ) async {
+    try {
+      await controller.restore(entry);
+    } on DailyLimitException {
+      messenger.showSnackBar(const SnackBar(
+        content: Text("Can't undo: another drink has already filled today's goal."),
+      ));
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text(friendlyError(e))));
+    }
+  }
+
+  static String _limitMessage(DailyLimitException e, UserSettings settings) => e.goalReached
+      ? "Today's goal is already reached. Edit a drink below if you need to correct it."
+      : 'Only ${Volume.format(e.remainingMl, settings.unit)} fits in today\'s goal.';
 }
 
 class _SwitchCupButton extends StatelessWidget {

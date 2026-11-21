@@ -46,6 +46,7 @@ class SwitchCupScreen extends ConsumerWidget {
         title: 'Custom cup size',
         submitLabel: 'Use this size',
         showTime: false,
+        maxMl: null,
       );
       if (result != null && context.mounted) await select(result.amountMl);
     }
